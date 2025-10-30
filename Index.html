@@ -25,15 +25,15 @@
 </head>
 <body>
   <h1>Δ = THE OBSERVER + Solar</h1>
-  <p>Live Bell-State CHSH simulation in a noisy cavity.</p>
-  <p>Slide noise, then click to collapse the wavefunction.</p>
+  <p>Live Bell-State CHSH + Real-time Solar Flare Prediction</p>
+  <p>Slide noise → collapse. NOAA X-ray data → flare risk.</p>
   
   <div>Noise Level (γ): <span id="noise-value">0.005</span></div>
   <input type="range" id="noise-slider" min="0" max="0.1" step="0.001" value="0.005">
   
   <div id="progress"></div>
   <button id="collapse" disabled>Collapse Now</button>
-  <button id="predict-flare">Predict Flare</button>
+  <button id="predict-flare">Update Solar</button>
 
   <div id="py-status">Loading quantum engine...</div>
   <div id="flare-status">Fetching solar data...</div>
@@ -41,28 +41,30 @@
 
   <div id="result"></div>
 
-  <!-- PYODIDE FROM CDN (NO DOWNLOAD!) -->
+  <!-- PYODIDE CDN -->
   <script src="https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"></script>
   <script>
+    let pyodide = null;
     let pyodideReady = false;
-    async function loadPyodideAndPackages() {
+
+    // Wait for Pyodide to load
+    async function initPyodide() {
       const status = document.getElementById('py-status');
       status.textContent = 'Loading quantum engine...';
       try {
-        const pyodide = await loadPyodide();
+        pyodide = await loadPyodide();
         await pyodide.loadPackage("numpy");
         status.textContent = 'Quantum engine ready!';
         setTimeout(() => status.style.display = 'none', 2000);
         pyodideReady = true;
         document.getElementById('collapse').disabled = false;
-        return pyodide;
       } catch (e) {
         status.textContent = 'Error: ' + e.message;
         status.style.color = '#f55';
       }
     }
-    const pyodidePromise = loadPyodideAndPackages();
 
+    // DOM Elements
     const slider = document.getElementById('noise-slider');
     const noiseValue = document.getElementById('noise-value');
     const collapseBtn = document.getElementById('collapse');
@@ -75,11 +77,17 @@
 
     slider.addEventListener('input', () => noiseValue.textContent = slider.value);
 
+    // CHSH Simulation
     collapseBtn.addEventListener('click', async () => {
-      if (!pyodideReady) return;
+      if (!pyodideReady) {
+        resultDiv.textContent = "Quantum engine still loading...";
+        return;
+      }
       const gamma = parseFloat(slider.value);
-      collapseBtn.disabled = true; collapseBtn.textContent = "Running...";
-      resultDiv.textContent = ""; resultDiv.classList.remove('pulse');
+      collapseBtn.disabled = true;
+      collapseBtn.textContent = "Running...";
+      resultDiv.textContent = "";
+      resultDiv.classList.remove('pulse');
 
       let width = 0;
       const interval = setInterval(() => {
@@ -88,7 +96,6 @@
       }, 50);
 
       try {
-        const pyodide = await pyodidePromise;
         const code = `
 import numpy as np
 psi = np.array([1,0,0,1],dtype=complex)/np.sqrt(2)
@@ -117,9 +124,10 @@ print(out)
 `;
         await pyodide.runPython(code);
         const output = pyodide.globals.get('out');
-        clearInterval(interval); progress.style.background = '#333';
+        clearInterval(interval);
+        progress.style.background = '#333';
         resultDiv.innerText = output;
-        if (Math.abs(parseFloat(output.match(/CHSH S = ([-\d.]+)/)[1])) > 2) {
+        if (output.includes('S =') && parseFloat(output.match(/S = ([-\d.]+)/)[1]) > 2) {
           resultDiv.classList.add('pulse');
         }
       } catch (err) {
@@ -131,9 +139,11 @@ print(out)
       }
     });
 
+    // Solar Flare Prediction
     let fluxData = [];
     async function fetchSolarData() {
-      flareDiv.textContent = "Fetching solar data..."; flareDiv.style.color = "#ff0";
+      flareDiv.textContent = "Fetching solar data...";
+      flareDiv.style.color = "#ff0";
       const url = 'https://services.swpc.noaa.gov/json/goes/primary/xrays-1-minute.json';
       try {
         const resp = await fetch(url, { cache: "no-store" });
@@ -144,7 +154,8 @@ print(out)
           .map(p => ({ t: new Date(p.time_tag).getTime(), f: parseFloat(p.flux) || 0 }))
           .filter(p => p.f > 0 && (now - p.t) <= 30*60*1000)
           .sort((a,b) => a.t - b.t);
-        drawChart(); predictFlare();
+        drawChart();
+        predictFlare();
       } catch (e) {
         flareDiv.textContent = "Solar data failed — retrying...";
         flareDiv.style.color = "#f55";
@@ -154,10 +165,13 @@ print(out)
 
     function drawChart() {
       ctx.clearRect(0,0,400,120);
-      if (fluxData.length < 2) { ctx.fillStyle = '#666'; ctx.fillText('No data', 180, 60); return; }
+      if (fluxData.length < 2) {
+        ctx.fillStyle = '#666'; ctx.font = '12px monospace'; ctx.fillText('No data', 180, 60);
+        return;
+      }
       const t = fluxData.map(p => p.t), f = fluxData.map(p => p.f);
       const minT = Math.min(...t), maxT = Math.max(...t);
-      const minF = Math.min(...f), maxF = Math.max(...f);
+      const minF = Math.min(...f), maxF = Math.max(...f) || minF + 1e-10;
       const w = 320, h = 80, padX = 40, padY = 20;
       ctx.strokeStyle = '#0f0'; ctx.lineWidth = 2; ctx.beginPath();
       fluxData.forEach((p,i) => {
@@ -169,7 +183,11 @@ print(out)
     }
 
     function predictFlare() {
-      if (fluxData.length < 10) { flareDiv.textContent = "Flare prob: —"; return; }
+      if (fluxData.length < 10) {
+        flareDiv.textContent = "Flare prob: —";
+        collapseBtn.classList.remove('warn');
+        return;
+      }
       const recent = fluxData.slice(-5);
       const dt = (recent[recent.length-1].t - recent[0].t) / 1000;
       const slope = dt > 0 ? (recent[recent.length-1].f - recent[0].f) / dt : 0;
@@ -185,7 +203,7 @@ print(out)
 
     predictBtn.addEventListener('click', fetchSolarData);
     setInterval(fetchSolarData, 120000);
-    fetchSolarData();
+    initPyodide().then(fetchSolarData);
   </script>
 </body>
-</html> 
+</html>
